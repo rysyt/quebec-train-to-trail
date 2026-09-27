@@ -1,0 +1,15 @@
+.claude/
+.DS_Store
+CLAUDE.md
+DECISIONS.md
+reminders/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+.env
+
+# Data (downloads and rasters are rebuilt, not committed)
+raw/
+*.tif
