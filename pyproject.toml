@@ -1,0 +1,20 @@
+[project]
+name = "quebec-train-to-trail"
+version = "0.1.0"
+description = "Hike planning in northern Québec from VIA Rail stops with PostGIS"
+authors = [
+    { name = "rysyt" }
+]
+requires-python = ">=3.13"
+dependencies = [
+    "httpx>=0.28.1",
+    "prefect>=3.8.8",
+    "psycopg[binary]>=3.3.6",
+]
+
+[project.scripts]
+quebec-train-to-trail = "quebec_train_to_trail:main"
+
+[build-system]
+requires = ["uv_build>=0.12.23,<0.13.0"]
+build-backend = "uv_build"
