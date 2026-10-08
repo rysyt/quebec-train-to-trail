@@ -2,7 +2,19 @@
 
 A tool for planning hikes in northern Québec that start from a VIA Rail stop. It will answer questions like "which trails of at least 10 km start within 3 km of a stop?" (arbitrary numbers for now) and illustrate the answers with a map.
 
-**Status:** planned, no code yet. Setup instructions will come with the first release.
+**Status:** in progress. The database runs (slice 1 of 9); no data is loaded yet.
+
+## Run it locally
+
+Needs [Docker Desktop](https://www.docker.com/products/docker-desktop/).
+
+```
+cp .env.example .env     # then set your own password in .env
+docker compose up -d     # start PostGIS in the background
+docker compose exec db psql -U train_to_trail -d train_to_trail
+```
+
+In `psql`, `SELECT postgis_full_version();` should answer. The database listens on `localhost:5432` only. Stop it with `docker compose down`; your data is kept.
 
 ## How it will work
 
