@@ -2,11 +2,11 @@
 
 A tool for planning hikes in northern Québec that start from a VIA Rail stop. It will answer questions like "which trails of at least 10 km start within 3 km of a stop?" (arbitrary numbers for now) and illustrate the answers with a map.
 
-**Status:** in progress. The database runs (slice 1 of 9); no data is loaded yet.
+**Status:** in progress. The database runs and VIA Rail's GTFS feed loads into it (slice 2 of 9).
 
 ## Run it locally
 
-Needs [Docker Desktop](https://www.docker.com/products/docker-desktop/).
+Needs [Docker Desktop](https://www.docker.com/products/docker-desktop/) and [uv](https://docs.astral.sh/uv/getting-started/installation/).
 
 ```
 cp .env.example .env     # then set your own password in .env
@@ -15,6 +15,15 @@ docker compose exec db psql -U train_to_trail -d train_to_trail
 ```
 
 In `psql`, `SELECT postgis_full_version();` should answer. The database listens on `localhost:5432` only. Stop it with `docker compose down`; your data is kept.
+
+Load VIA Rail's GTFS feed into the `raw` schema (uv installs Python 3.13 and the dependencies on first run):
+
+```
+uv sync
+uv run --env-file .env python -m quebec_train_to_trail.ingest.via_gtfs
+```
+
+The flow downloads the feed to `raw/viarail.zip` once, then loads every file in it into its own table (`stops.txt` becomes `raw.stops`) and logs each table's row count. Rerunning it reloads the tables from the saved zip.
 
 ## How it will work
 
@@ -40,7 +49,9 @@ VIA GTFS, OSM, MRDEM -> Prefect -> raw -> SQL -> staging -> analytics -> QGIS
 
 ## Checks
 
-On every push, GitHub Actions runs pytest and SQL data checks: row counts between steps, valid geometry, and no duplicates.
+Before each commit, [pre-commit](https://pre-commit.com/) checks formatting, YAML and TOML, file sizes and private keys, lints and formats Python with Ruff, and keeps `uv.lock` in step. Turn it on once per clone with `uv run pre-commit install`.
+
+On every push, GitHub Actions will run pytest and SQL data checks: row counts between steps, valid geometry, and no duplicates.
 
 ## Roadmap
 
