@@ -20,12 +20,12 @@ Run from the repo root:
 
 import csv
 import io
-import httpx
-import zipfile
-import psycopg
 import os
+import zipfile
 from pathlib import Path
 
+import httpx
+import psycopg
 from prefect import flow, get_run_logger, task
 from prefect.cache_policies import NONE
 from psycopg import sql
@@ -37,34 +37,32 @@ RAW_DIR = Path("raw")
 def connect():
     """Open a connection to PostGIS using the credentials in the environment."""
     return psycopg.connect(
-        host="localhost",                       # compose publishes the db on 127.0.0.1
+        host="localhost",  # compose publishes the db on 127.0.0.1
         port=5432,
         dbname=os.environ["POSTGRES_DB"],
         user=os.environ["POSTGRES_USER"],
         password=os.environ["POSTGRES_PASSWORD"],
     )
-    
 
 
 @task(retries=2, retry_delay_seconds=10)
 def download_gtfs(url: str, dest: Path) -> Path:
     """Download the zip to dest unless it's already there. Return its path."""
-    #Checking directory exists
+    # Checking directory exists
     if not RAW_DIR.exists():
         RAW_DIR.mkdir(parents=True)
-    
-    #Checking the file does NOT exist
+
+    # Checking the file does NOT exist
     if dest.is_file():
         return dest
-    
-    #Downloading the zip
+
+    # Downloading the zip
     with httpx.stream("GET", url, follow_redirects=True) as response:
         response.raise_for_status()
         with dest.open("wb") as f:
             for chunk in response.iter_bytes():
                 f.write(chunk)
     return dest
-        
 
 
 @task
@@ -89,7 +87,9 @@ def create_raw_table(conn: psycopg.Connection, name: str, columns: list[str]) ->
     conn.execute(
         sql.SQL("CREATE TABLE {} ({})").format(
             table,
-            sql.SQL(", ").join(sql.SQL("{} text").format(sql.Identifier(c)) for c in columns),
+            sql.SQL(", ").join(
+                sql.SQL("{} text").format(sql.Identifier(c)) for c in columns
+            ),
         )
     )
 
@@ -100,12 +100,15 @@ def load_table(conn: psycopg.Connection, zip_path: Path, name: str) -> int:
     copy_sql = sql.SQL("COPY {} FROM STDIN WITH (FORMAT csv, HEADER true)").format(
         sql.Identifier("raw", name)
     )
-    with zipfile.ZipFile(zip_path) as zf, zf.open(f"{name}.txt") as f:
-        with conn.cursor() as cur:
-            with cur.copy(copy_sql) as copy:
-                while chunk := f.read(65536):
-                    copy.write(chunk)
-            return cur.rowcount
+    with (
+        zipfile.ZipFile(zip_path) as zf,
+        zf.open(f"{name}.txt") as f,
+        conn.cursor() as cur,
+    ):
+        with cur.copy(copy_sql) as copy:
+            while chunk := f.read(65536):
+                copy.write(chunk)
+        return cur.rowcount
 
 
 @flow
@@ -115,11 +118,10 @@ def ingest_via_gtfs() -> None:
     gtfs_path = download_gtfs(GTFS_URL, RAW_DIR / "viarail.zip")
     with connect() as conn:
         for file_name, columns in read_headers(gtfs_path):
-            name = Path(file_name).stem #Getting name "stops" from "stops.txt"
+            name = Path(file_name).stem  # Getting name "stops" from "stops.txt"
             create_raw_table(conn, name, columns)
             rows = load_table(conn, gtfs_path, name)
             logger.info("raw.%s: %d rows", name, rows)
-    
 
 
 if __name__ == "__main__":
