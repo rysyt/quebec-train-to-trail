@@ -1,0 +1,53 @@
+# Data tests on every push (ADR 0006): load the committed GTFS snapshot into PostGIS, then pytest.
+name: data tests
+
+on: push
+
+jobs:
+  data-tests:
+    runs-on: ubuntu-latest
+    env:
+      # Throwaway credentials: this database lives only for the length of the run.
+      POSTGRES_USER: train_to_trail
+      POSTGRES_PASSWORD: ci_only
+      POSTGRES_DB: train_to_trail
+    services:
+      db:
+        image: postgis/postgis:18-3.6
+        # The env context isn't available here, so the values are repeated.
+        env:
+          POSTGRES_USER: train_to_trail
+          POSTGRES_PASSWORD: ci_only
+          POSTGRES_DB: train_to_trail
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U train_to_trail"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: astral-sh/setup-uv@v10.2.0
+        with:
+          version: "0.12.23"
+
+      - name: Install dependencies
+        run: uv sync --locked
+
+      # Services start before checkout, so db/init can't be mounted as in compose.yaml.
+      - name: Create schemas
+        run: psql -h localhost -U "$POSTGRES_USER" -d "$POSTGRES_DB" -v ON_ERROR_STOP=1 -f db/init/20-schemas.sql
+        env:
+          PGPASSWORD: ${{ env.POSTGRES_PASSWORD }}
+
+      # The flow skips the download when raw/viarail.zip exists, so it loads the snapshot (D26).
+      - name: Load the GTFS snapshot
+        run: |
+          mkdir -p raw
+          cp tests/data/viarail.zip raw/viarail.zip
+          uv run python -m quebec_train_to_trail.ingest.via_gtfs
+
+      - name: Run tests
+        run: uv run pytest
