@@ -35,7 +35,7 @@ VIA GTFS, OSM, MRDEM -> Prefect -> raw -> SQL -> staging -> analytics -> QGIS
 
 ## Sources
 
-- **VIA Rail GTFS**: schedules, stops and track shapes for the Montréal to Senneterre and Montréal to Jonquière lines (Open Government Licence - Canada).
+- **VIA Rail GTFS**: schedules, stops and track shapes for the Montréal to Senneterre and Montréal to Jonquière lines. Contains information licensed under the [Open Government Licence – Canada](https://open.canada.ca/en/open-government-licence-canada). A snapshot is committed in `tests/data/` as test data.
 - **OpenStreetMap**: trails, and later places to stay.
 - **Natural Resources Canada MRDEM-30**: a 30 m elevation model.
 
