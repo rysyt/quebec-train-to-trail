@@ -49,5 +49,10 @@ jobs:
           cp tests/data/viarail.zip raw/viarail.zip
           uv run python -m quebec_train_to_trail.ingest.via_gtfs
 
+      - name: Break a row count (temporary)
+        run: psql -h localhost -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "DELETE FROM raw.stops WHERE stop_id = (SELECT min(stop_id) FROM raw.stops)"
+        env:
+          PGPASSWORD: ${{ env.POSTGRES_PASSWORD }}
+
       - name: Run tests
         run: uv run pytest
