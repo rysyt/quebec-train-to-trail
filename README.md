@@ -2,7 +2,7 @@
 
 A tool for planning hikes in northern Québec that start from a VIA Rail stop. It will answer questions like "which trails of at least 10 km start within 3 km of a stop?" (arbitrary numbers for now) and illustrate the answers with a map.
 
-**Status:** in progress. The database runs and VIA Rail's GTFS feed loads into it (slice 2 of 9).
+**Status:** in progress. The database runs, VIA Rail's GTFS feed loads into it, and every push is tested on GitHub (slice 3 of 9).
 
 ## Run it locally
 
@@ -51,7 +51,13 @@ VIA GTFS, OSM, MRDEM -> Prefect -> raw -> SQL -> staging -> analytics -> QGIS
 
 Before each commit, [pre-commit](https://pre-commit.com/) checks formatting, YAML and TOML, file sizes and private keys, lints and formats Python with Ruff, and keeps `uv.lock` in step. Turn it on once per clone with `uv run pre-commit install`.
 
-On every push, GitHub Actions will run pytest and SQL data checks: row counts between steps, valid geometry, and no duplicates.
+On every push, GitHub Actions starts PostGIS, loads a committed snapshot of the GTFS feed (`tests/data/viarail.zip`) with the flow, and runs pytest. The tests check that each `raw` table has as many rows as its file, and run the SQL checks in `tests/sql/`: each returns the rows that break it, so an empty result passes. Later steps will add checks for row counts between steps and valid geometry. A pull request can merge into `main` only when this check passes.
+
+Run the same tests locally, after loading the feed:
+
+```
+uv run --env-file .env pytest
+```
 
 ## Roadmap
 
