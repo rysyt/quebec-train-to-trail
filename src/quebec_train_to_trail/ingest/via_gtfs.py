@@ -6,7 +6,7 @@ Spec:
 - Load every .txt file in the zip into schema raw, one table per file (stops.txt -> raw.stops).
 - A Prefect flow made of tasks (ADR 0005), run by hand.
 - Database credentials come from the environment (POSTGRES_USER, POSTGRES_PASSWORD,
-  POSTGRES_DB, loaded from .env); host localhost, port 5432. Never hard-coded.
+  POSTGRES_DB, loaded from .env); host POSTGRES_HOST (default localhost), port 5432. Never hard-coded.
 - The database runs in Docker and can't see files on this machine: load with
   COPY ... FROM STDIN, not COPY ... FROM '<path>'.
 
@@ -37,7 +37,7 @@ RAW_DIR = Path("raw")
 def connect():
     """Open a connection to PostGIS using the credentials in the environment."""
     return psycopg.connect(
-        host="localhost",  # compose publishes the db on 127.0.0.1
+        host=os.environ.get("POSTGRES_HOST", "localhost"),  # "db" inside compose
         port=5432,
         dbname=os.environ["POSTGRES_DB"],
         user=os.environ["POSTGRES_USER"],

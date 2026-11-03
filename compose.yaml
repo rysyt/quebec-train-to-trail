@@ -10,5 +10,19 @@ services:
     volumes:
       - pgdata:/var/lib/postgresql
       - ./db/init/20-schemas.sql:/docker-entrypoint-initdb.d/20-schemas.sql:ro
+
+  # Run with: docker compose run --rm pipeline
+  # The profile keeps "docker compose up -d" to the database only.
+  pipeline:
+    build: .
+    profiles: [pipeline]
+    env_file: .env
+    environment:
+      POSTGRES_HOST: db
+    volumes:
+      - ./raw:/app/raw  # downloads persist on the host between runs
+    depends_on:
+      - db
+
 volumes:
   pgdata:

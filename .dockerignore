@@ -1,0 +1,11 @@
+.git
+.venv
+.env
+raw
+tmp
+docs
+reminders
+DECISIONS.md
+CLAUDE.md
+.claude
+**/__pycache__
