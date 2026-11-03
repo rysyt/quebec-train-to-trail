@@ -33,15 +33,18 @@ def list_sql_files(sql_dir: Path) -> list[Path]:
 
 @task(task_run_name="{path.name}")
 def run_sql_file(path: Path) -> int:
-    """Run one file in a single transaction. Return the rows its last statement wrote."""
+    """Run one file in a single transaction. Return the rows its last INSERT wrote."""
     with connect() as conn, conn.cursor() as cur:
         # One execute call runs every statement in the file; leaving the block commits,
         # and an error rolls the whole file back.
         cur.execute(path.read_text())
-        # There is one result per statement; step to the last one (the INSERT).
+        # There is one result per statement. Keep the count of the last one that wrote
+        # rows (an INSERT); DROP, CREATE and CREATE INDEX report -1.
+        rows = cur.rowcount
         while cur.nextset():
-            pass
-        return cur.rowcount
+            if cur.rowcount >= 0:
+                rows = cur.rowcount
+        return rows
 
 
 @flow
