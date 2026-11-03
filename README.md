@@ -2,7 +2,9 @@
 
 A tool for planning hikes in northern Québec that start from a VIA Rail stop. It will answer questions like "which trails of at least 10 km start within 3 km of a stop?" (arbitrary numbers for now) and illustrate the answers with a map.
 
-**Status:** in progress. The database runs, VIA Rail's GTFS feed loads into it, and every push is tested on GitHub (slice 3 of 9).
+**Status:** in progress. VIA Rail's GTFS feed loads into PostGIS, the two train lines are built from it, and a data-quality gate checks every run (slice 4 of 9).
+
+**Stack:** Python, Prefect, PostgreSQL with PostGIS, SQL, Docker Compose, uv, pytest, Ruff, SQLFluff, pre-commit, GitHub Actions.
 
 ## Run it locally
 
@@ -16,14 +18,51 @@ docker compose exec db psql -U train_to_trail -d train_to_trail
 
 In `psql`, `SELECT postgis_full_version();` should answer. The database listens on `localhost:5432` only. Stop it with `docker compose down`; your data is kept.
 
-Load VIA Rail's GTFS feed into the `raw` schema (uv installs Python 3.13 and the dependencies on first run):
+Run the whole pipeline (uv installs Python 3.13 and the dependencies on first run):
 
 ```
 uv sync
-uv run --env-file .env python -m quebec_train_to_trail.ingest.via_gtfs
+uv run --env-file .env python -m quebec_train_to_trail.pipeline
 ```
 
-The flow downloads the feed to `raw/viarail.zip` once, then loads every file in it into its own table (`stops.txt` becomes `raw.stops`) and logs each table's row count. Rerunning it reloads the tables from the saved zip.
+It ends with `Finished in state Completed()` when every step and check passed. Each step can also run on its own:
+
+```
+uv run --env-file .env python -m quebec_train_to_trail.ingest.via_gtfs     # ingest only
+uv run --env-file .env python -m quebec_train_to_trail.transform.run_sql   # transform only
+```
+
+## The pipeline
+
+The pipeline is a [Prefect](https://docs.prefect.io/) flow. A flow is the whole job; each step inside it is a task, and Prefect logs, times and retries every task on its own. `pipeline` runs three smaller flows in order:
+
+1. **Ingest** (`ingest-via-gtfs`). Downloads the GTFS feed to `raw/viarail.zip` once, then loads every file in it into its own table (`stops.txt` becomes `raw.stops`). A rerun reuses the saved zip.
+2. **Transform** (`transform`). Runs the SQL files in `db/transform/` in number order (`01_rail_line.sql`, then `02_...`). Each file runs in its own transaction, so a file that fails leaves `staging` as it was and stops the run. `01_rail_line.sql` builds `staging.rail_line`: the Jonquière and Senneterre lines as geometry in EPSG:32198, in metres.
+3. **Quality gate** (`quality-gate`). Runs every check in `tests/sql/` as its own task. A check is a query that returns the rows breaking a rule, so no rows means it passed. Every check runs, then the pipeline fails if any of them found bad rows.
+
+![The pipeline run in the Prefect dashboard: ingest, transform, then five green checks](docs/images/pipeline-run.png)
+
+**Why the gate.** A step can finish without errors and still produce wrong data: a station in the wrong place, a line missing after the source renumbers its shapes. The gate stops the run there, so wrong data never reaches `analytics` or the map, and it logs the rows that broke the rule. Here a station was moved 1 km off its line on purpose; the check that every stop is within 100 m of its line catches it:
+
+![The quality gate failing: four checks pass, the 100 m check fails](docs/images/quality-gate-failure.png)
+
+![The log: one bad row, Jonquière station 883.3 m from its line](docs/images/quality-gate-failure-log.png)
+
+### Watch it in the dashboard
+
+Prefect comes with a local web dashboard that shows each run as a graph like the ones above. Start it in one terminal and leave it running:
+
+```
+uv run prefect server start
+```
+
+Then run the pipeline in a second terminal, pointed at that server (without `PREFECT_API_URL`, Prefect starts a temporary server that disappears when the run ends):
+
+```
+PREFECT_API_URL=http://127.0.0.1:4200/api uv run --env-file .env python -m quebec_train_to_trail.pipeline
+```
+
+Open http://127.0.0.1:4200, go to **Runs** and click the `pipeline` run. Expand a step in the graph to see its tasks; click a task to read its logs.
 
 ## How it will work
 
@@ -43,17 +82,17 @@ VIA GTFS, OSM, MRDEM -> Prefect -> raw -> SQL -> staging -> analytics -> QGIS
 
 1. **Collect.** Python flows run by Prefect download each source into `raw/`. Downloads stay on the local machine and are not committed. A rerun reuses them instead of downloading again.
 2. **Load.** PostGIS runs in Docker Compose, with three schemas: `raw`, `staging` and `analytics`.
-3. **Clean.** Hand-written SQL files run in order. They reproject everything to EPSG:32198 (NAD83 / Québec Lambert), fix invalid geometry, remove duplicates, and join trail segments into whole trails with their lengths. Elevation is only cut to a corridor around the two lines and reprojected.
+3. **Clean.** SQL files run in order. They reproject everything to EPSG:32198 (NAD83 / Québec Lambert), fix invalid geometry, remove duplicates, and join trail segments into whole trails with their lengths. Elevation is only cut to a corridor around the two lines and reprojected.
 4. **Ask.** SQL queries in `analytics` answer the hike questions, for example trails of at least a given length within a given distance of a stop. Later: remote, hilly trails with somewhere to sleep and eat nearby.
 5. **Map.** A QGIS project, saved as a plain `.qgs` file in the repo, shows the results on a 2D map and the train's route in 3D on the elevation data.
 
 ## Checks
 
-Before each commit, [pre-commit](https://pre-commit.com/) checks formatting, YAML and TOML, file sizes and private keys, lints and formats Python with Ruff, and keeps `uv.lock` in step. Turn it on once per clone with `uv run pre-commit install`.
+Before each commit, [pre-commit](https://pre-commit.com/) checks formatting, YAML and TOML, file sizes and private keys, lints and formats Python with Ruff and SQL with SQLFluff, and keeps `uv.lock` in step. Turn it on once per clone with `uv run pre-commit install`.
 
-On every push, GitHub Actions starts PostGIS, loads a committed snapshot of the GTFS feed (`tests/data/viarail.zip`) with the flow, and runs pytest. The tests check that each `raw` table has as many rows as its file, and run the SQL checks in `tests/sql/`: each returns the rows that break it, so an empty result passes. Later steps will add checks for row counts between steps and valid geometry. A pull request can merge into `main` only when this check passes.
+On every push, GitHub Actions starts PostGIS, runs the whole pipeline on a committed snapshot of the GTFS feed (`tests/data/viarail.zip`), and then runs pytest. The tests check that each `raw` table has as many rows as its file, and run the SQL checks in `tests/sql/`: each returns the rows that break it, so an empty result passes. Later steps will add checks for row counts between steps and valid geometry. A pull request can merge into `main` only when this check passes.
 
-Run the same tests locally, after loading the feed:
+Run the same tests locally, after running the pipeline:
 
 ```
 uv run --env-file .env pytest
