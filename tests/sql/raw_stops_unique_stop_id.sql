@@ -1,5 +1,7 @@
 -- Each stop_id appears once in raw.stops.
-SELECT stop_id, count(*) AS copies
+SELECT
+    stop_id,
+    COUNT(*) AS copies
 FROM raw.stops
 GROUP BY stop_id
-HAVING count(*) > 1;
+HAVING COUNT(*) > 1;
