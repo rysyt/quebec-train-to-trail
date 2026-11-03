@@ -34,3 +34,17 @@ pre-commit is a dev dependency, so `uv sync` installs it; each clone runs
 + Hook versions are pinned in the config file.
 - A hook that fixes a file stops the commit; the fix must be staged and committed again.
 - `check-added-large-files` will need a higher limit for the test data committed in slice 3.
+
+## Note (2026-11-03): SQLFluff added
+
+Riley's words, 2026-11-03:
+> commit those then add the sqlfluff rule choices into a 0012
+
+> I'll accept the uppercase as long as it's consistent.
+
+SQLFluff 4.4.0 now runs on every commit: `sqlfluff-fix`, then `sqlfluff-lint` for what it can't
+fix. `.sqlfluff` sets the PostgreSQL dialect and keeps the default rules, with these choices:
+- Keywords, functions, data types and boolean/null literals are upper case in every file
+  (`ST_MAKELINE`, `TEXT`, `TRUE`). The default, "consistent", only matches the first use within
+  each file.
+- Lines stay within the default 80 characters; long comments are wrapped by hand.

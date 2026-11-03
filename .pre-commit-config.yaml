@@ -28,3 +28,9 @@ repos:
     rev: 0.12.23
     hooks:
       - id: uv-lock
+
+  - repo: https://github.com/sqlfluff/sqlfluff
+    rev: 4.4.0
+    hooks:
+      - id: sqlfluff-fix
+      - id: sqlfluff-lint

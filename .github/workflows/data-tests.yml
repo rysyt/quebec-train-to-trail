@@ -42,12 +42,13 @@ jobs:
         env:
           PGPASSWORD: ${{ env.POSTGRES_PASSWORD }}
 
-      # The flow skips the download when raw/viarail.zip exists, so it loads the snapshot (D26).
-      - name: Load the GTFS snapshot
+      # Ingest skips the download when raw/viarail.zip exists, so it loads the snapshot.
+      # The pipeline then builds staging and runs the data-quality gate.
+      - name: Run the pipeline on the GTFS snapshot
         run: |
           mkdir -p raw
           cp tests/data/viarail.zip raw/viarail.zip
-          uv run python -m quebec_train_to_trail.ingest.via_gtfs
+          uv run python -m quebec_train_to_trail.pipeline
 
       - name: Run tests
         run: uv run pytest
