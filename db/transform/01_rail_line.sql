@@ -3,7 +3,7 @@
 -- raw stores every column as text, so the casts happen here.
 -- Reprojected to EPSG:32198 (Québec Lambert, metres) as ADR 0010 says.
 
-DROP TABLE IF EXISTS staging.rail_line;
+DROP TABLE IF EXISTS staging.rail_line CASCADE;
 
 CREATE TABLE staging.rail_line (
     line_id TEXT PRIMARY KEY,
@@ -42,3 +42,6 @@ GROUP BY
     chosen_lines.line_id,
     chosen_lines.line_name,
     chosen_lines.shape_id;
+
+-- GiST index for distance queries.
+CREATE INDEX rail_line_geom_gist ON staging.rail_line USING gist (geom);
