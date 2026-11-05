@@ -1,10 +1,12 @@
 # quebec-train-to-trail
 
+[![data tests](https://github.com/rysyt/quebec-train-to-trail/actions/workflows/data-tests.yml/badge.svg)](https://github.com/rysyt/quebec-train-to-trail/actions/workflows/data-tests.yml)
+
 A tool for planning hikes in northern Québec that start from a VIA Rail stop. It will answer questions like "which trails of at least 10 km start within 3 km of a stop?" (arbitrary numbers for now) and illustrate the answers with a map.
 
-**Status:** in progress. VIA Rail's GTFS feed loads into PostGIS, the two train lines are built from it, and a data-quality gate checks every run (slice 4 of 9).
+**Status:** in progress. VIA Rail's GTFS feed and the OpenStreetMap ways and places within 20 km of the two train lines load into PostGIS, the lines and their stops are built, and a data-quality gate checks every run (slice 5 of 9).
 
-**Stack:** Python, Prefect, PostgreSQL with PostGIS, SQL, Docker Compose, uv, pytest, Ruff, SQLFluff, pre-commit, GitHub Actions.
+**Stack:** Python, Prefect, Apache Spark with Apache Sedona, PostgreSQL with PostGIS, SQL, Docker Compose, uv, pytest, Ruff, SQLFluff, pre-commit, GitHub Actions.
 
 ## Run it locally
 
@@ -25,20 +27,33 @@ uv sync
 uv run --env-file .env python -m quebec_train_to_trail.pipeline
 ```
 
-It ends with `Finished in state Completed()` when every step and check passed. Each step can also run on its own:
+It ends with `Finished in state Completed()` when every step and check passed. The first run downloads OpenStreetMap's Québec extract (1.2 GB) and Sedona's Spark jars; the OpenStreetMap step then takes about 10 minutes and needs Java 17. Each step can also run on its own:
 
 ```
-uv run --env-file .env python -m quebec_train_to_trail.ingest.via_gtfs     # ingest only
+uv run --env-file .env python -m quebec_train_to_trail.ingest.via_gtfs     # GTFS only
+uv run --env-file .env python -m quebec_train_to_trail.ingest.osm          # OpenStreetMap only
 uv run --env-file .env python -m quebec_train_to_trail.transform.run_sql   # transform only
 ```
 
+### Or run it in Docker
+
+The pipeline image has Python, Java and every dependency, so nothing else needs installing:
+
+```
+docker compose build pipeline     # once, and after code changes
+docker compose run --rm pipeline
+```
+
+Downloads go to `raw/` on your machine, so a rerun reuses them.
+
 ## The pipeline
 
-The pipeline is a [Prefect](https://docs.prefect.io/) flow. A flow is the whole job; each step inside it is a task, and Prefect logs, times and retries every task on its own. `pipeline` runs three smaller flows in order:
+The pipeline is a [Prefect](https://docs.prefect.io/) flow. A flow is the whole job; each step inside it is a task, and Prefect logs, times and retries every task on its own. `pipeline` runs four smaller flows in order:
 
-1. **Ingest** (`ingest-via-gtfs`). Downloads the GTFS feed to `raw/viarail.zip` once, then loads every file in it into its own table (`stops.txt` becomes `raw.stops`). A rerun reuses the saved zip.
-2. **Transform** (`transform`). Runs the SQL files in `db/transform/` in number order (`01_rail_line.sql`, then `02_...`). Each file runs in its own transaction, so a file that fails leaves `staging` as it was and stops the run. `01_rail_line.sql` builds `staging.rail_line`: the Jonquière and Senneterre lines as geometry in EPSG:32198, in metres. `02_stop.sql` builds `staging.stop`, the 91 stops on those lines, and `staging.stop_line`, which pairs each stop with its line or lines (the stops from Montréal to Hervey are on both). Every geometry column gets a GiST index, so distance queries skip far-away shapes.
-3. **Quality gate** (`quality-gate`). Runs every check in `tests/sql/` as its own task. A check is a query that returns the rows breaking a rule, so no rows means it passed. Every check runs, then the pipeline fails if any of them found bad rows.
+1. **Ingest GTFS** (`ingest-via-gtfs`). Downloads the GTFS feed to `raw/viarail.zip` once, then loads every file in it into its own table (`stops.txt` becomes `raw.stops`). A rerun reuses the saved zip.
+2. **Ingest OpenStreetMap** (`ingest-osm`). Downloads Geofabrik's Québec extract to `raw/` once and checks its MD5 sum. Spark, with Apache Sedona for the spatial functions, then reads the 1.2 GB file and keeps what lies within 20 km of the two lines. It filters before it joins: first the points inside the corridor, then the ways that touch one of them, and only then are those ways joined to their points to build lines. The result goes to `raw.osm_ways` (every road and path, about 570,000), `raw.osm_places` (places to sleep and eat, shelters, toilets and towns, about 12,000) and `raw.osm_hiking_routes` (51 named hiking routes), with their OpenStreetMap tags. Which of them count as trails is decided later, in SQL.
+3. **Transform** (`transform`). Runs the SQL files in `db/transform/` in number order (`01_rail_line.sql`, then `02_...`). Each file runs in its own transaction, so a file that fails leaves `staging` as it was and stops the run. `01_rail_line.sql` builds `staging.rail_line`: the Jonquière and Senneterre lines as geometry in EPSG:32198, in metres. `02_stop.sql` builds `staging.stop`, the 91 stops on those lines, and `staging.stop_line`, which pairs each stop with its line or lines (the stops from Montréal to Hervey are on both). Every geometry column gets a GiST index, so distance queries skip far-away shapes.
+4. **Quality gate** (`quality-gate`). Runs every check in `tests/sql/` as its own task. A check is a query that returns the rows breaking a rule, so no rows means it passed. Every check runs, then the pipeline fails if any of them found bad rows.
 
 ![The pipeline run in the Prefect dashboard: ingest, transform, then five green checks](docs/images/pipeline-run.png)
 
@@ -64,18 +79,10 @@ PREFECT_API_URL=http://127.0.0.1:4200/api uv run --env-file .env python -m quebe
 
 Open http://127.0.0.1:4200, go to **Runs** and click the `pipeline` run. Expand a step in the graph to see its tasks; click a task to read its logs.
 
-## How it will work
-
-Pipelines will collect train stops, trails and elevation from public sources, load them into PostGIS, clean them up with SQL, and map the results in QGIS.
-
-```
-VIA GTFS, OSM, MRDEM -> Prefect -> raw -> SQL -> staging -> analytics -> QGIS
-```
-
 ## Sources
 
 - **VIA Rail GTFS**: schedules, stops and track shapes for the Montréal to Senneterre and Montréal to Jonquière lines. Contains information licensed under the [Open Government Licence – Canada](https://open.canada.ca/en/open-government-licence-canada). A snapshot is committed in `tests/data/` as test data.
-- **OpenStreetMap**: trails, and later places to stay.
+- **OpenStreetMap**, via [Geofabrik](https://download.geofabrik.de/north-america/canada/quebec.html): roads, paths, hiking routes, places to stay and eat. © OpenStreetMap contributors, available under the [Open Database License](https://www.openstreetmap.org/copyright). A small cut around Hervey-Jonction is committed in `tests/data/` as test data.
 - **Natural Resources Canada MRDEM-30**: a 30 m elevation model.
 
 ## Steps
@@ -90,7 +97,7 @@ VIA GTFS, OSM, MRDEM -> Prefect -> raw -> SQL -> staging -> analytics -> QGIS
 
 Before each commit, [pre-commit](https://pre-commit.com/) checks formatting, YAML and TOML, file sizes and private keys, lints and formats Python with Ruff and SQL with SQLFluff, and keeps `uv.lock` in step. Turn it on once per clone with `uv run pre-commit install`.
 
-On every push, GitHub Actions starts PostGIS, runs the whole pipeline on a committed snapshot of the GTFS feed (`tests/data/viarail.zip`), and then runs pytest. The tests check that each `raw` table has as many rows as its file, and run the SQL checks in `tests/sql/`: each returns the rows that break it, so an empty result passes. Later steps will add checks for row counts between steps and valid geometry. A pull request can merge into `main` only when this check passes.
+On every push, GitHub Actions starts PostGIS, runs the whole pipeline on the committed snapshots (the GTFS feed and the Hervey-Jonction OpenStreetMap cut in `tests/data/`), and then runs pytest. The tests check that each `raw` table has as many rows as its file, and run the SQL checks in `tests/sql/`: each returns the rows that break it, so an empty result passes. Later steps will add checks for row counts between steps and valid geometry. A pull request can merge into `main` only when this check passes.
 
 Run the same tests locally, after running the pipeline:
 
