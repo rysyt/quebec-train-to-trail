@@ -33,6 +33,12 @@ jobs:
         with:
           version: "0.12.23"
 
+      # Spark needs Java 17; the runner's default Java is newer and breaks Spark's Hadoop code.
+      - uses: actions/setup-java@v6.1.0
+        with:
+          distribution: temurin
+          java-version: "17"
+
       - name: Install dependencies
         run: uv sync --locked
 
@@ -42,12 +48,14 @@ jobs:
         env:
           PGPASSWORD: ${{ env.POSTGRES_PASSWORD }}
 
-      # Ingest skips the download when raw/viarail.zip exists, so it loads the snapshot.
-      # The pipeline then builds staging and runs the data-quality gate.
-      - name: Run the pipeline on the GTFS snapshot
+      # Ingest skips a download when the file is already in raw/, so it loads the snapshots:
+      # the GTFS feed and a small OpenStreetMap cut around Hervey-Jonction. The pipeline then
+      # builds staging and runs the data-quality gate.
+      - name: Run the pipeline on the test snapshots
         run: |
           mkdir -p raw
           cp tests/data/viarail.zip raw/viarail.zip
+          cp tests/data/osm-hervey.osm.pbf raw/quebec-latest.osm.pbf
           uv run python -m quebec_train_to_trail.pipeline
 
       - name: Run tests

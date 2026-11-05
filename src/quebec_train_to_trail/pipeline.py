@@ -1,7 +1,8 @@
 """Run the whole pipeline: ingest, transform, then a data-quality gate.
 
 Spec:
-- Ingest the VIA GTFS feed into raw, then run the transform SQL into staging (subflows).
+- Ingest the VIA GTFS feed and OpenStreetMap into raw, then run the transform SQL into
+  staging (subflows).
 - Gate: run every check in tests/sql/ (ADR 0015) as its own task. A check that returns rows
   fails its task and logs the first rows. Every check runs, then the pipeline fails if any did,
   so bad data never moves on to analytics.
@@ -14,6 +15,7 @@ from pathlib import Path
 
 from prefect import flow, get_run_logger, task
 
+from quebec_train_to_trail.ingest.osm import ingest_osm
 from quebec_train_to_trail.ingest.via_gtfs import connect, ingest_via_gtfs
 from quebec_train_to_trail.transform.run_sql import transform
 
@@ -49,8 +51,9 @@ def quality_gate() -> None:
 
 @flow
 def pipeline() -> None:
-    """Ingest, transform, then gate."""
+    """Ingest GTFS and OSM, transform, then gate."""
     ingest_via_gtfs()
+    ingest_osm()
     transform()
     quality_gate()
 
