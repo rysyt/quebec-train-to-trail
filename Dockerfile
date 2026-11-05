@@ -25,4 +25,8 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --locked --no-dev
 
 ENV PATH="/app/.venv/bin:$PATH"
+
+# Sedona's Spark jars, downloaded at build time so a run needs no Maven access.
+ENV SEDONA_JARS_DIR=/opt/sedona-jars
+RUN python -c "from quebec_train_to_trail.ingest.osm import sedona_jars; sedona_jars()"
 CMD ["python", "-m", "quebec_train_to_trail.pipeline"]

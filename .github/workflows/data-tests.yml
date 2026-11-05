@@ -42,12 +42,14 @@ jobs:
         env:
           PGPASSWORD: ${{ env.POSTGRES_PASSWORD }}
 
-      # Ingest skips the download when raw/viarail.zip exists, so it loads the snapshot.
-      # The pipeline then builds staging and runs the data-quality gate.
-      - name: Run the pipeline on the GTFS snapshot
+      # Ingest skips a download when the file is already in raw/, so it loads the snapshots:
+      # the GTFS feed and a small OpenStreetMap cut around Hervey-Jonction. The pipeline then
+      # builds staging and runs the data-quality gate. Spark uses the runner's Java 17.
+      - name: Run the pipeline on the test snapshots
         run: |
           mkdir -p raw
           cp tests/data/viarail.zip raw/viarail.zip
+          cp tests/data/osm-hervey.osm.pbf raw/quebec-latest.osm.pbf
           uv run python -m quebec_train_to_trail.pipeline
 
       - name: Run tests
