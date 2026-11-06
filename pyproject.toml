@@ -12,6 +12,7 @@ dependencies = [
     "pandas==3.0.6",
     "prefect>=3.8.8",
     "psycopg[binary]>=3.3.6",
+    "pyarrow==26.0.0",
     "pyspark==4.1.3",
 ]
 

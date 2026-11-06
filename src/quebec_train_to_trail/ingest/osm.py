@@ -9,9 +9,12 @@ Spec:
   1. keep the points inside the corridor,
   2. keep the ways (any highway, or a place to sleep or eat) that touch one of those points,
   3. join only those ways to their points and build their lines.
-- Load raw.osm_ways (highway lines), raw.osm_places (lodging, food, towns as points) and
-  raw.osm_hiking_routes (hiking route relations and their member ways). Tags stay as JSON;
-  what counts as a trail is decided in transform.
+- Write Spark's output to raw/osm/ (gitignored): ways and places as GeoParquet, hiking routes
+  as Parquet, then a manifest of what they were made from (the extract's MD5, the corridor and
+  the filter code). Skip Spark when the manifest matches.
+- Load the Parquet files into raw.osm_ways (highway lines), raw.osm_places (lodging, food,
+  towns as points) and raw.osm_hiking_routes (hiking route relations and their member ways).
+  Tags stay as JSON; what counts as a trail is decided in transform.
 - Log the number of footpaths in the corridor.
 
 Run from the repo root (Java 17 needed for Spark):
@@ -19,10 +22,14 @@ Run from the repo root (Java 17 needed for Spark):
 """
 
 import hashlib
+import inspect
+import json
 import os
+import shutil
 from pathlib import Path
 
 import httpx
+import pyarrow.parquet as pq
 from prefect import flow, get_run_logger, task
 from prefect.cache_policies import NONE
 from pyspark.sql import DataFrame
@@ -34,6 +41,8 @@ PBF_URL = "https://download.geofabrik.de/north-america/canada/quebec-latest.osm.
 RAW_DIR = Path("raw")
 PBF_PATH = RAW_DIR / "quebec-latest.osm.pbf"
 CORRIDOR_M = 20_000
+PARQUET_DIR = RAW_DIR / "osm"
+MANIFEST = PARQUET_DIR / "manifest.json"
 
 # Sedona's Spark jars, matched to PySpark 4.1 and apache-sedona 1.9.1 in pyproject.toml.
 MAVEN = "https://repo1.maven.org/maven2"
@@ -284,76 +293,135 @@ def filter_osm(spark, pbf: Path, pieces: list[str]) -> dict[str, DataFrame]:
     }
 
 
+# Spark's three outputs: Parquet directory, raw table, and its columns in file order.
+OUTPUTS = {
+    "ways": ("osm_ways", ["way_id", "tags", "geom"]),
+    "places": ("osm_places", ["osm_type", "osm_id", "tags", "geom"]),
+    "routes": ("osm_hiking_routes", ["relation_id", "tags", "way_ids"]),
+}
+# Tables are created with a plain geometry column, since the files hold WKB without an SRID;
+# after the load it is set to 4326 and given its type.
 TABLES = {
     "ways": """
         CREATE TABLE raw.osm_ways (
-            way_id bigint PRIMARY KEY, tags jsonb NOT NULL, geom geometry(LineString, 4326)
+            way_id bigint PRIMARY KEY, tags jsonb NOT NULL, geom geometry
         )""",
     "places": """
         CREATE TABLE raw.osm_places (
             osm_type text NOT NULL, osm_id bigint NOT NULL, tags jsonb NOT NULL,
-            geom geometry(Point, 4326), PRIMARY KEY (osm_type, osm_id)
+            geom geometry, PRIMARY KEY (osm_type, osm_id)
         )""",
     "routes": """
         CREATE TABLE raw.osm_hiking_routes (
             relation_id bigint PRIMARY KEY, tags jsonb NOT NULL, way_ids bigint[] NOT NULL
         )""",
 }
-COPY = {
-    "ways": "COPY raw.osm_ways (way_id, tags, geom) FROM STDIN",
-    "places": "COPY raw.osm_places (osm_type, osm_id, tags, geom) FROM STDIN",
-    "routes": "COPY raw.osm_hiking_routes (relation_id, tags, way_ids) FROM STDIN",
-}
+GEOM_TYPE = {"ways": "LineString", "places": "Point"}
+# An empty CRS leaves it out of the file's metadata, which GeoParquet reads as OGC:CRS84
+# (lon/lat on WGS 84, as EPSG:4326). Sedona's default writes "unknown".
+GEO_OPTIONS = {"geoparquet.crs": ""}
 
 
-def as_row(name: str, row) -> tuple:
-    """Spark row to a COPY row; geometry goes in as EWKT text."""
-    if name == "ways":
-        return (row["id"], row["tags"], f"SRID=4326;{row['wkt']}")
-    if name == "places":
-        return (row["osm_type"], row["id"], row["tags"], f"SRID=4326;{row['wkt']}")
-    return (row["id"], row["tags"], list(row["way_ids"]))
+def file_md5(path: Path) -> str:
+    """MD5 of a file, read in chunks."""
+    with path.open("rb") as f:
+        return hashlib.file_digest(f, "md5").hexdigest()
+
+
+def sha1(text: str) -> str:
+    return hashlib.sha1(text.encode()).hexdigest()
+
+
+def source_of(pbf: Path, pieces: list[str]) -> dict:
+    """What the Parquet files are made from: the extract, the corridor and the filter code."""
+    return {
+        "pbf_md5": file_md5(pbf),
+        "corridor_sha1": sha1("\n".join(pieces)),
+        "filter_sha1": sha1(inspect.getsource(filter_osm) + WAY_TEST),
+    }
 
 
 @task(cache_policy=NONE)
-def spark_to_raw(pbf: Path, pieces: list[str]) -> dict[str, int]:
-    """Run the Spark filter and load its three outputs into raw. Return the row counts."""
+def spark_to_parquet(pbf: Path, pieces: list[str], out_dir: Path) -> bool:
+    """Run the Spark filter and write its outputs to out_dir, unless they're current.
+
+    Return True if Spark ran, False if it was skipped.
+    """
+    logger = get_run_logger()
+    source = source_of(pbf, pieces)
+    manifest = out_dir / MANIFEST.name
+    if manifest.is_file() and json.loads(manifest.read_text()) == source:
+        logger.info("%s is current, skipping Spark", out_dir)
+        return False
+
+    # Remove the old files first, so a run that fails partway leaves no manifest behind.
+    shutil.rmtree(out_dir, ignore_errors=True)
     spark = spark_session()
     try:
         frames = filter_osm(spark, pbf, pieces)
-        counts = {}
-        with connect() as conn:
-            for name, df in frames.items():
-                table = {"ways": "osm_ways", "places": "osm_places"}.get(
-                    name, "osm_hiking_routes"
-                )
-                conn.execute(f"DROP TABLE IF EXISTS raw.{table}")
-                conn.execute(TABLES[name])
-                with conn.cursor() as cur, cur.copy(COPY[name]) as copy:
-                    n = 0
-                    for row in df.toLocalIterator():
-                        copy.write_row(as_row(name, row))
-                        n += 1
-                counts[name] = n
-            conn.execute("CREATE INDEX ON raw.osm_ways USING gist (geom)")
-            conn.execute("CREATE INDEX ON raw.osm_places USING gist (geom)")
-            counts["footpaths"] = conn.execute(
-                "SELECT count(*) FROM raw.osm_ways WHERE tags->>'highway' = ANY(%s)",
-                (FOOTPATHS,),
-            ).fetchone()[0]
-        return counts
+        geom = F.expr("ST_GeomFromWKT(wkt)").alias("geom")
+        frames["ways"].select(F.col("id").alias("way_id"), "tags", geom).write.format(
+            "geoparquet"
+        ).options(**GEO_OPTIONS).save(str(out_dir / "ways"))
+        frames["places"].select(
+            "osm_type", F.col("id").alias("osm_id"), "tags", geom
+        ).write.format("geoparquet").options(**GEO_OPTIONS).save(
+            str(out_dir / "places")
+        )
+        frames["routes"].select(
+            F.col("id").alias("relation_id"), "tags", "way_ids"
+        ).write.parquet(str(out_dir / "routes"))
     finally:
         spark.stop()
+    manifest.write_text(json.dumps(source, indent=2))
+    logger.info("Wrote GeoParquet to %s", out_dir)
+    return True
+
+
+def parquet_rows(path: Path, columns: list[str]):
+    """Rows of a Parquet directory as tuples; WKB geometry as hex text for COPY."""
+    for batch in pq.ParquetDataset(path).read(columns=columns).to_batches():
+        for row in zip(*(batch.column(c).to_pylist() for c in columns)):
+            yield tuple(v.hex() if isinstance(v, bytes) else v for v in row)
+
+
+@task(cache_policy=NONE)
+def parquet_to_raw(out_dir: Path) -> dict[str, int]:
+    """Load the Parquet files into the three raw tables. Return the row counts."""
+    counts = {}
+    with connect() as conn:
+        for name, (table, columns) in OUTPUTS.items():
+            conn.execute(f"DROP TABLE IF EXISTS raw.{table}")
+            conn.execute(TABLES[name])
+            copy_sql = f"COPY raw.{table} ({', '.join(columns)}) FROM STDIN"
+            with conn.cursor() as cur, cur.copy(copy_sql) as copy:
+                n = 0
+                for row in parquet_rows(out_dir / name, columns):
+                    copy.write_row(row)
+                    n += 1
+            counts[name] = n
+            if name in GEOM_TYPE:
+                conn.execute(
+                    f"ALTER TABLE raw.{table} ALTER COLUMN geom"
+                    f" TYPE geometry({GEOM_TYPE[name]}, 4326) USING ST_SetSRID(geom, 4326)"
+                )
+                conn.execute(f"CREATE INDEX ON raw.{table} USING gist (geom)")
+        counts["footpaths"] = conn.execute(
+            "SELECT count(*) FROM raw.osm_ways WHERE tags->>'highway' = ANY(%s)",
+            (FOOTPATHS,),
+        ).fetchone()[0]
+    return counts
 
 
 @flow
 def ingest_osm() -> None:
-    """Download the extract, then filter it with Spark into raw."""
+    """Download the extract, filter it with Spark to GeoParquet, then load it into raw."""
     logger = get_run_logger()
     pbf = download_pbf(PBF_URL, PBF_PATH)
     pieces = corridor_pieces(CORRIDOR_M)
     logger.info("Corridor: %d km, %d pieces", CORRIDOR_M // 1000, len(pieces))
-    counts = spark_to_raw(pbf, pieces)
+    spark_to_parquet(pbf, pieces, PARQUET_DIR)
+    counts = parquet_to_raw(PARQUET_DIR)
     logger.info(
         "raw.osm_ways: %d (footpaths in the corridor: %d), raw.osm_places: %d, "
         "raw.osm_hiking_routes: %d",
